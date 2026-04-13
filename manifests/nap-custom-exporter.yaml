@@ -1,0 +1,198 @@
+# NAP Custom Exporter - Kubernetes deployment manifests
+#
+# Deploys a custom Prometheus exporter that watches NodeClaim CRDs and
+# Kubernetes events to expose Karpenter/NAP-derived metrics on :9110/metrics.
+#
+# This is the "creative solution" for clients who want NAP metrics in their
+# self-hosted Prometheus WITHOUT requiring Azure Managed Prometheus.
+#
+# Metrics exposed:
+#   nap_nodeclaims_total              - NodeClaims by phase
+#   nap_nodeclaims_created_total      - NodeClaims created
+#   nap_nodeclaims_terminated_total   - NodeClaims terminated
+#   nap_nodes_total                   - NAP-managed nodes by status
+#   nap_nodeclaim_capacity_cpu_cores  - CPU capacity per NodeClaim
+#   nap_nodeclaim_capacity_memory_bytes - Memory capacity per NodeClaim
+#   nap_nodeclaim_age_seconds         - Age of each NodeClaim
+#   nap_events_total                  - Karpenter-related events
+#
+# Usage:
+#   kubectl apply -f nap-custom-exporter.yaml
+#
+# Prerequisite: Build and push the image, or use the in-repo Dockerfile:
+#   cd nap-custom-exporter
+#   docker build -t <your-registry>/nap-custom-exporter:latest .
+#   docker push <your-registry>/nap-custom-exporter:latest
+#   Then update the image below.
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: nap-exporter
+  labels:
+    app.kubernetes.io/part-of: nap-custom-exporter
+---
+# ServiceAccount for the exporter
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: nap-custom-exporter
+  namespace: nap-exporter
+  labels:
+    app.kubernetes.io/name: nap-custom-exporter
+---
+# ClusterRole — read-only access to NodeClaims, Nodes, Events
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: nap-custom-exporter
+  labels:
+    app.kubernetes.io/name: nap-custom-exporter
+rules:
+  # NodeClaim CRDs (Karpenter)
+  - apiGroups: ["karpenter.sh"]
+    resources: ["nodeclaims"]
+    verbs: ["get", "list", "watch"]
+  # Nodes
+  - apiGroups: [""]
+    resources: ["nodes"]
+    verbs: ["get", "list", "watch"]
+  # Events (for Karpenter-related events)
+  - apiGroups: [""]
+    resources: ["events"]
+    verbs: ["get", "list", "watch"]
+---
+# Bind the ClusterRole to the ServiceAccount
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: nap-custom-exporter
+  labels:
+    app.kubernetes.io/name: nap-custom-exporter
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: nap-custom-exporter
+subjects:
+  - kind: ServiceAccount
+    name: nap-custom-exporter
+    namespace: nap-exporter
+---
+# Deployment
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nap-custom-exporter
+  namespace: nap-exporter
+  labels:
+    app.kubernetes.io/name: nap-custom-exporter
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: nap-custom-exporter
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: nap-custom-exporter
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9110"
+        prometheus.io/path: "/metrics"
+    spec:
+      serviceAccountName: nap-custom-exporter
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        fsGroup: 1000
+      containers:
+        - name: exporter
+          # To use this, build the image from nap-custom-exporter/Dockerfile
+          # and push it to your container registry, then update this value.
+          #
+          # For a quick local demo you can also run the exporter as a Pod
+          # with the Python script mounted. See README for details.
+          image: ghcr.io/jmm-org1/nap-custom-exporter:latest
+          args: ["--port", "9110", "--interval", "30"]
+          ports:
+            - name: metrics
+              containerPort: 9110
+              protocol: TCP
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 200m
+              memory: 128Mi
+          livenessProbe:
+            httpGet:
+              path: /metrics
+              port: metrics
+            initialDelaySeconds: 10
+            periodSeconds: 30
+          readinessProbe:
+            httpGet:
+              path: /metrics
+              port: metrics
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+      # Prefer scheduling on the system node pool, not NAP nodes
+      tolerations:
+        - key: CriticalAddonsOnly
+          operator: Exists
+      affinity:
+        nodeAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              preference:
+                matchExpressions:
+                  - key: kubernetes.azure.com/mode
+                    operator: In
+                    values:
+                      - system
+---
+# Service to expose the metrics endpoint
+apiVersion: v1
+kind: Service
+metadata:
+  name: nap-custom-exporter
+  namespace: nap-exporter
+  labels:
+    app.kubernetes.io/name: nap-custom-exporter
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: nap-custom-exporter
+  ports:
+    - name: metrics
+      port: 9110
+      targetPort: metrics
+      protocol: TCP
+---
+# ServiceMonitor for kube-prometheus-stack auto-discovery
+# (only created if the CRD exists; safe to apply regardless)
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: nap-custom-exporter
+  namespace: nap-exporter
+  labels:
+    app.kubernetes.io/name: nap-custom-exporter
+    release: prometheus   # matches default kube-prometheus-stack selector
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: nap-custom-exporter
+  namespaceSelector:
+    matchNames:
+      - nap-exporter
+  endpoints:
+    - port: metrics
+      interval: 30s
+      path: /metrics
