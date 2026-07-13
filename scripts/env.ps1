@@ -1,0 +1,5 @@
+$env:TENANT_ID = "77f10603-631f-47d3-aa71-c9c763272c17"
+$env:SUBSCRIPTION_ID = "eb0ecdef-0b83-421f-9208-b723e72fcd41"
+$env:RESOURCE_GROUP = "rg-NAP-Metrics"
+$env:ACR_NAME = "acrd8384304"
+$env:LOCATION = "swedencentral"

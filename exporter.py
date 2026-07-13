@@ -28,21 +28,20 @@ Environment variables:
 """
 
 import argparse
+from collections import deque
 import logging
 import os
 import signal
-import sys
 import time
 from datetime import datetime, timezone
 
-from kubernetes import client, config, watch
+from kubernetes import client, config
 from kubernetes.client.rest import ApiException
 from prometheus_client import (
     Counter,
     Gauge,
     Summary,
     start_http_server,
-    REGISTRY,
 )
 
 # ---------------------------------------------------------------------------
@@ -199,6 +198,13 @@ class NAPCollector:
         self._core_api: client.CoreV1Api | None = None
         self._known_nodeclaims: dict[str, str] = {}  # name -> nodepool
         self._seen_event_uids: set[str] = set()
+        self._seen_event_uid_order: deque[str] = deque()
+        self._seen_event_uid_capacity = 10000
+        self._nodeclaims_total_labels: set[tuple[str, str]] = set()
+        self._nodeclaim_cpu_labels: set[tuple[str, str]] = set()
+        self._nodeclaim_memory_labels: set[tuple[str, str]] = set()
+        self._nodeclaim_age_labels: set[tuple[str, str, str]] = set()
+        self._nap_nodes_total_labels: set[str] = set()
 
     # -- initialisation -------------------------------------------------------
 
@@ -238,14 +244,11 @@ class NAPCollector:
             ERRORS_TOTAL.labels(source="nodeclaims").inc()
             return
 
-        # Reset gauges before repopulating
-        NODECLAIMS_TOTAL._metrics.clear()
-        NODECLAIM_CPU._metrics.clear()
-        NODECLAIM_MEMORY._metrics.clear()
-        NODECLAIM_AGE._metrics.clear()
-
         current_claims: dict[str, str] = {}  # name -> nodepool
         phase_counts: dict[tuple[str, str], int] = {}
+        current_cpu_labels: set[tuple[str, str]] = set()
+        current_memory_labels: set[tuple[str, str]] = set()
+        current_age_labels: set[tuple[str, str, str]] = set()
 
         for item in result.get("items", []):
             metadata = item.get("metadata", {})
@@ -270,16 +273,37 @@ class NAPCollector:
             mem = _parse_k8s_resource(capacity.get("memory"))
             if cpu > 0:
                 NODECLAIM_CPU.labels(nodeclaim=name, nodepool=nodepool).set(cpu)
+                current_cpu_labels.add((name, nodepool))
             if mem > 0:
                 NODECLAIM_MEMORY.labels(nodeclaim=name, nodepool=nodepool).set(mem)
+                current_memory_labels.add((name, nodepool))
 
             # Age
             age = _age_seconds(creation)
             NODECLAIM_AGE.labels(nodeclaim=name, nodepool=nodepool, phase=phase).set(age)
+            current_age_labels.add((name, nodepool, phase))
 
         # Populate gauges
         for (phase, nodepool), count in phase_counts.items():
             NODECLAIMS_TOTAL.labels(phase=phase, nodepool=nodepool).set(count)
+
+        # Remove stale labeled time series for gauges backed by dynamic resources
+        current_total_labels = set(phase_counts.keys())
+        for phase, nodepool in self._nodeclaims_total_labels - current_total_labels:
+            NODECLAIMS_TOTAL.remove(phase, nodepool)
+        self._nodeclaims_total_labels = current_total_labels
+
+        for nodeclaim, nodepool in self._nodeclaim_cpu_labels - current_cpu_labels:
+            NODECLAIM_CPU.remove(nodeclaim, nodepool)
+        self._nodeclaim_cpu_labels = current_cpu_labels
+
+        for nodeclaim, nodepool in self._nodeclaim_memory_labels - current_memory_labels:
+            NODECLAIM_MEMORY.remove(nodeclaim, nodepool)
+        self._nodeclaim_memory_labels = current_memory_labels
+
+        for nodeclaim, nodepool, phase in self._nodeclaim_age_labels - current_age_labels:
+            NODECLAIM_AGE.remove(nodeclaim, nodepool, phase)
+        self._nodeclaim_age_labels = current_age_labels
 
         # Detect created / terminated (skip first run)
         current_names = set(current_claims.keys())
@@ -306,7 +330,6 @@ class NAPCollector:
             ERRORS_TOTAL.labels(source="nodes").inc()
             return
 
-        NAP_NODES_TOTAL._metrics.clear()
         counts: dict[str, int] = {}
         for node in nodes.items:
             node_labels = node.metadata.labels or {}
@@ -323,32 +346,56 @@ class NAPCollector:
         for status, count in counts.items():
             NAP_NODES_TOTAL.labels(status=status).set(count)
 
+        current_status_labels = set(counts.keys())
+        for status in self._nap_nodes_total_labels - current_status_labels:
+            NAP_NODES_TOTAL.remove(status)
+        self._nap_nodes_total_labels = current_status_labels
+
     def _collect_events(self):
-        """Scan recent events for Karpenter-related reasons, deduplicating by UID."""
-        try:
-            events = self._core_api.list_event_for_all_namespaces(
-                limit=200,
-                _request_timeout=10,
-            )
-        except ApiException as exc:
-            log.error("Error listing events: %s", exc.reason)
-            ERRORS_TOTAL.labels(source="events").inc()
-            return
+        """Scan events for Karpenter-related reasons, deduplicating by UID."""
+        continue_token = None
+        pages = 0
+        max_pages = 10
 
-        for ev in events.items:
-            reason = ev.reason or ""
-            if reason not in KARPENTER_EVENT_REASONS:
-                continue
-            uid = ev.metadata.uid or ""
-            if uid in self._seen_event_uids:
-                continue
-            self._seen_event_uids.add(uid)
-            ev_type = ev.type or "Normal"
-            EVENTS_TOTAL.labels(reason=reason, type=ev_type).inc()
+        while pages < max_pages:
+            pages += 1
+            try:
+                events = self._core_api.list_event_for_all_namespaces(
+                    limit=200,
+                    _continue=continue_token,
+                    _request_timeout=10,
+                )
+            except ApiException as exc:
+                log.error("Error listing events: %s", exc.reason)
+                ERRORS_TOTAL.labels(source="events").inc()
+                return
 
-        # Prevent unbounded growth: trim old UIDs when set gets large
-        if len(self._seen_event_uids) > 10000:
-            self._seen_event_uids = set(list(self._seen_event_uids)[-5000:])
+            for ev in events.items:
+                reason = ev.reason or ""
+                if reason not in KARPENTER_EVENT_REASONS:
+                    continue
+                uid = ev.metadata.uid or ""
+                if not uid or uid in self._seen_event_uids:
+                    continue
+                self._remember_event_uid(uid)
+                ev_type = ev.type or "Normal"
+                EVENTS_TOTAL.labels(reason=reason, type=ev_type).inc()
+
+            metadata = getattr(events, "metadata", None)
+            continue_token = getattr(metadata, "_continue", None)
+            if not continue_token:
+                return
+
+        log.warning("Event pagination stopped after %d pages; some events may be deferred", max_pages)
+
+    def _remember_event_uid(self, uid: str):
+        """Track event UIDs with deterministic FIFO eviction."""
+        self._seen_event_uids.add(uid)
+        self._seen_event_uid_order.append(uid)
+
+        while len(self._seen_event_uids) > self._seen_event_uid_capacity:
+            oldest_uid = self._seen_event_uid_order.popleft()
+            self._seen_event_uids.discard(oldest_uid)
 
 
 def _status_phase(status: dict) -> str:
@@ -380,6 +427,9 @@ def main():
         help="Collection interval in seconds (default 30)",
     )
     args = parser.parse_args()
+
+    if args.interval <= 0:
+        parser.error("--interval must be a positive integer")
 
     collector = NAPCollector()
     collector.init_k8s()

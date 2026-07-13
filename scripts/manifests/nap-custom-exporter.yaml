@@ -112,7 +112,7 @@ spec:
           #
           # For a quick local demo you can also run the exporter as a Pod
           # with the Python script mounted. See README for details.
-          image: ghcr.io/jmm-org1/nap-custom-exporter:latest
+          image: napmetrics12.azurecr.io/nap-custom-exporter:latest
           args: ["--port", "9110", "--interval", "30"]
           ports:
             - name: metrics

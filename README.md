@@ -44,6 +44,34 @@ When using NAP on AKS, Karpenter control plane metrics are **only available via 
 
 ## Quick Start
 
+### Azure deployment with AKS + NAP/Karpenter
+
+Use [deploy.ps1](c:\Users\dawahby\MyRepos\NAP-Metrics-SelfHosted-Prometheus\deploy.ps1) to provision Azure infrastructure with Azure CLI and deploy this exporter end to end:
+
+```powershell
+.\deploy.ps1 -SubscriptionId <subscription-id> -Location <location>
+```
+
+The script creates:
+- Resource group
+- Virtual network with node subnet and delegated API server subnet
+- User-assigned managed identity for AKS
+- Azure Container Registry
+- AKS cluster on Kubernetes `1.31.0`
+- AKS Node Auto-Provisioning in `Auto` mode, which provides managed Karpenter with the default `default` and `system-surge` node pools
+- Self-hosted Prometheus via `kube-prometheus-stack` Helm chart using standard chart values
+- The exporter image in ACR and the Kubernetes deployment from [manifests/nap-custom-exporter.yaml](c:\Users\dawahby\MyRepos\NAP-Metrics-SelfHosted-Prometheus\manifests\nap-custom-exporter.yaml)
+
+Requirements:
+- Azure CLI `2.76.0` or later
+- Docker
+- Helm
+- Azure login with permission to create RBAC assignments and AKS resources
+
+Notes:
+- The script uses AKS-managed Karpenter through NAP rather than installing the open-source Karpenter Helm chart separately. That is the supported AKS path and avoids conflicting controllers.
+- The self-hosted Prometheus install creates the `ServiceMonitor` CRD before the exporter manifest is applied.
+
 ### 1. Build and push the image
 
 ```bash
@@ -111,12 +139,18 @@ Included in `manifests/nap-custom-exporter.yaml`.
 
 ```
 .
-├── Dockerfile              # Image based on python:3.12-slim
-├── exporter.py             # Exporter code
-├── requirements.txt        # Python dependencies
+├── deploy.ps1                         # End-to-end Azure + AKS + Prometheus deployment
+├── Dockerfile                         # Exporter container image definition
+├── exporter.py                        # Prometheus exporter implementation
+├── HARDENING_REPORT.md                # Security/reliability review and fixes
+├── README.md
+├── requirements.txt                   # Python dependencies
 ├── manifests/
-│   └── nap-custom-exporter.yaml   # Namespace, RBAC, Deployment, Service, ServiceMonitor
-└── README.md
+│   ├── nap-custom-exporter.yaml       # Namespace, RBAC, Deployment, Service, ServiceMonitor
+│   └── scripts/
+└── scripts/
+    ├── Install-Choco.ps1              # Chocolatey bootstrap helper
+    └── Install-Helm.ps1               # Helm installation helper
 ```
 
 ## Local Execution (Development)
@@ -132,3 +166,7 @@ python exporter.py --port 9110 --interval 15
 - AKS cluster with **NAP enabled** (`--node-provisioning-mode Auto`)
 - Self-hosted Prometheus (e.g., [kube-prometheus-stack](https://github.com/prometheus-community/helm-charts/tree/main/charts/kube-prometheus-stack))
 - The `NodeClaim` CRD (`karpenter.sh/v1`) must exist in the cluster (created when NAP is enabled)
+
+## Disclaimer
+
+See [DISCLAIMER.md](DISCLAIMER.md) for the open-source usage and third-party license notice.
