@@ -139,18 +139,21 @@ Included in `manifests/nap-custom-exporter.yaml`.
 
 ```
 .
-├── deploy.ps1                         # End-to-end Azure + AKS + Prometheus deployment
+├── .gitignore
+├── DISCLAIMER.md                      # Open-source usage and third-party license notice
 ├── Dockerfile                         # Exporter container image definition
 ├── exporter.py                        # Prometheus exporter implementation
 ├── HARDENING_REPORT.md                # Security/reliability review and fixes
 ├── README.md
 ├── requirements.txt                   # Python dependencies
-├── manifests/
-│   ├── nap-custom-exporter.yaml       # Namespace, RBAC, Deployment, Service, ServiceMonitor
-│   └── scripts/
 └── scripts/
+    ├── deploy.ps1                     # End-to-end Azure + AKS + Prometheus deployment
+    ├── env.ps1                        # Local environment variables (ignored from git)
+    ├── env.sample                     # Environment variable template
     ├── Install-Choco.ps1              # Chocolatey bootstrap helper
-    └── Install-Helm.ps1               # Helm installation helper
+    ├── Install-Helm.ps1               # Helm installation helper
+    └── manifests/
+        └── nap-custom-exporter.yaml   # Namespace, RBAC, Deployment, Service, ServiceMonitor
 ```
 
 ## Local Execution (Development)
