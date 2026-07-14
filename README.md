@@ -101,6 +101,25 @@ kubectl port-forward -n nap-exporter svc/nap-custom-exporter 9110:9110
 curl http://localhost:9110/metrics | grep nap_
 ```
 
+#### 4. Verify Prometheus Ingestion
+
+Collector and ingestion verification flow:
+
+1. The collector exposes derived NAP metrics on `http://<collector>:9110/metrics` from Kubernetes `NodeClaim`, `Node`, and `Event` resources.
+2. The `ServiceMonitor` in `nap-exporter` instructs kube-prometheus-stack to scrape `/metrics` every 30 seconds.
+3. Verify the scrape target is active in Prometheus API:
+
+```bash
+kubectl -n monitoring port-forward svc/prometheus-kube-prometheus-prometheus 9090:9090
+curl "http://localhost:9090/api/v1/targets?state=active" | grep nap-custom-exporter
+```
+
+4. Verify ingestion by querying a collector metric through Prometheus API:
+
+```bash
+curl "http://localhost:9090/api/v1/query?query=nap_nodeclaims_total"
+```
+
 ## Configuration
 
 | Environment Variable / Flag | Default | Description |
