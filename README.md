@@ -101,7 +101,7 @@ kubectl port-forward -n nap-exporter svc/nap-custom-exporter 9110:9110
 curl http://localhost:9110/metrics | grep nap_
 ```
 
-#### 4. Verify Prometheus Ingestion
+### 4. Verify Prometheus Ingestion
 
 Collector and ingestion verification flow:
 
