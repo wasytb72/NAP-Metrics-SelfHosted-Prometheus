@@ -261,8 +261,10 @@ Included in `manifests/nap-custom-exporter.yaml`.
     ├── deploy.ps1                     # End-to-end Azure + AKS + Prometheus deployment
     ├── env.ps1                        # Local environment variables (ignored from git)
     ├── env.sample                     # Environment variable template
+  ├── get-napmetrics.ps1             # Helper to fetch/display NAP metrics quickly
     ├── Install-Choco.ps1              # Chocolatey bootstrap helper
     ├── Install-Helm.ps1               # Helm installation helper
+  ├── query-prometheus.ps1           # Query Prometheus API with Invoke-RestMethod
     └── manifests/
         └── nap-custom-exporter.yaml   # Namespace, RBAC, Deployment, Service, ServiceMonitor
 ```
