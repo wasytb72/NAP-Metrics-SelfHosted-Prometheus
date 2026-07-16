@@ -286,6 +286,10 @@ Notes for `nap_*` but total:
 - The default AKS system node pool (`systemnp`) is not NAP-managed, so those nodes are excluded by design.
 - To populate this metric, run workload that triggers NAP scale-out so NodeClaims are created and nodes are provisioned in NAP-managed pools (for example, `default` or `system-surge`).
 
+## Acknowledgments
+
+Special thanks to the original author, **josemzr**, for the foundational work behind this project.
+
 ## Disclaimer
 
 See [DISCLAIMER.md](DISCLAIMER.md) for the open-source usage and third-party license notice.
