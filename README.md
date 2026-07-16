@@ -96,9 +96,9 @@ This creates:
 
 ### 3. Verify metrics
 
-```bash
+```powershell
 kubectl port-forward -n nap-exporter svc/nap-custom-exporter 9110:9110
-curl http://localhost:9110/metrics | grep nap_
+curl http://localhost:9110/metrics | select-string nap_
 ```
 
 ### 4. Verify Prometheus Ingestion
@@ -109,15 +109,107 @@ Collector and ingestion verification flow:
 2. The `ServiceMonitor` in `nap-exporter` instructs kube-prometheus-stack to scrape `/metrics` every 30 seconds.
 3. Verify the scrape target is active in Prometheus API:
 
-```bash
+```powershell
 kubectl -n monitoring port-forward svc/prometheus-kube-prometheus-prometheus 9090:9090
-curl "http://localhost:9090/api/v1/targets?state=active" | grep nap-custom-exporter
+curl "http://localhost:9090/api/v1/targets?state=active" | select-string nap-custom-exporter
 ```
 
 4. Verify ingestion by querying a collector metric through Prometheus API:
 
+```powershell
+curl.exe "http://localhost:9090/api/v1/query?query=nap_nodeclaims_total"
+```
+
+## Prometheus Query API with curl
+
+After port-forwarding Prometheus:
+
 ```bash
-curl "http://localhost:9090/api/v1/query?query=nap_nodeclaims_total"
+kubectl -n monitoring port-forward svc/prometheus-kube-prometheus-prometheus 9090:9090
+```
+
+Use these curl patterns to consume the Prometheus HTTP API.
+
+If you are in PowerShell, use `curl.exe` (not `curl`) to avoid alias behavior.
+
+### 1. Instant query (single point in time)
+
+```powerhell
+curl.exe --get "http://localhost:9090/api/v1/query" --data-urlencode "query=nap_nodes_total"
+```
+
+```bash
+curl.exe --get "http://localhost:9090/api/v1/query" --data-urlencode "query=nap_nodes_total"
+```
+### 2. Instant query with labels and aggregation
+
+```powershell
+curl.exe --get "http://localhost:9090/api/v1/query" --data-urlencode "query=sum by (status) (nap_nodes_total)"
+```
+
+```bash
+curl --get "http://localhost:9090/api/v1/query" --data-urlencode "query=sum by (status) (nap_nodes_total)"
+```
+
+### 3. Range query (time series over a window)
+
+
+```powershell
+curl.exe --get "http://localhost:9090/api/v1/query_range" --data-urlencode 'query=nap_nodeclaims_total{phase="Ready"}' --data-urlencode "start=2026-07-16T10:00:00Z" --data-urlencode "end=2026-07-16T11:00:00Z" --data-urlencode "step=30s"
+```
+
+### 4. Check API health quickly
+
+```bash
+curl "http://localhost:9090/-/healthy"
+curl "http://localhost:9090/-/ready"
+```
+
+```powershell
+curl.exe "http://localhost:9090/-/healthy"
+curl.exe "http://localhost:9090/-/ready"
+```
+
+### 5. Return only parsed JSON values (optional with jq)
+
+```bash
+curr --get "http://localhost:9090/api/v1/query" --data-urlencode "query=nap_events_total" | jq '.data.result'
+```
+
+```powershell
+curl.exe --get "http://localhost:9090/api/v1/query" --data-urlencode "query=nap_nodes_total" | jq '.data.result'
+```
+
+
+Notes:
+- Prefer `--get` + `--data-urlencode` for PromQL expressions with spaces, braces, or quotes.
+- For `query_range`, `step` can be `15s`, `30s`, `1m`, etc.
+- The API response shape is `{ "status": "success", "data": { "resultType": ..., "result": [...] } }`.
+
+### PowerShell alternative (Invoke-RestMethod)
+
+A reusable script is available at `scripts/query-prometheus.ps1`.
+
+Instant query:
+
+```powershell
+./scripts/query-prometheus.ps1 -Query 'nap_nodes_total' -asjson
+```
+
+Range query:
+
+```powershell
+./scripts/query-prometheus.ps1 -Mode query_range `
+  -Query 'nap_nodeclaims_total{phase="Ready"}' `
+  -Start '2026-07-16T10:00:00Z' `
+  -End '2026-07-16T11:00:00Z' `
+  -Step '30s'
+```
+
+Raw JSON response:
+
+```powershell
+./scripts/query-prometheus.ps1 -Query 'nap_events_total' -AsJson
 ```
 
 ## Configuration
@@ -188,6 +280,11 @@ python exporter.py --port 9110 --interval 15
 - AKS cluster with **NAP enabled** (`--node-provisioning-mode Auto`)
 - Self-hosted Prometheus (e.g., [kube-prometheus-stack](https://github.com/prometheus-community/helm-charts/tree/main/charts/kube-prometheus-stack))
 - The `NodeClaim` CRD (`karpenter.sh/v1`) must exist in the cluster (created when NAP is enabled)
+
+Notes for `nap_*` but total:
+- This metric only counts nodes created by AKS NAP/Karpenter (nodes with `karpenter.sh/*` labels).
+- The default AKS system node pool (`systemnp`) is not NAP-managed, so those nodes are excluded by design.
+- To populate this metric, run workload that triggers NAP scale-out so NodeClaims are created and nodes are provisioned in NAP-managed pools (for example, `default` or `system-surge`).
 
 ## Disclaimer
 
